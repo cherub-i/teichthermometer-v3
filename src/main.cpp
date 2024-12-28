@@ -11,20 +11,36 @@
 // Config
 #define ONE_WIRE_BUS 4
 
+#ifndef SECRETS_H
+// WIFI access
+const char* kWifiSsid = "<wifi-ssid>";
+const char* kWifiPassword = "<wifi-pwd>>";
+
+// MQTT access
+const char* kMqttServer = "<mqtt.server.com>";
+const int kMqttPort = 1883;
+const char* kMqttClientId = "<client-id>";
+const char* kMqttUser = "<user-name>";
+const char* kMqttPassword = "<user-password>";
+const char* kMqttTopic = "<topic/subtopic>";
+#endif
+
 // Energy saving
-const boolean developmentMode = false;
-const int sleepTimeSeconds = (developmentMode) ? 10 : 10 * 60;
-const float minTemperatureDifference = 0.1;
+const boolean kDevelopmentMode = false;
+const int kSleepTimeSeconds = (kDevelopmentMode) ? 10 : 10 * 60;
+const int kMaxTimeWithoutTransmissionSeconds =
+    (kDevelopmentMode) ? 30 : 60 * 60;
+const float kMinTemperatureDifference = 0.1;
 
 // Sensor Byte-Adresses
-const int numberOfSensors = 2;
-const DeviceAddress sensorAdresses[] = {
+const int kNumberOfSensors = 2;
+const DeviceAddress kSensorAdresses[] = {
     {0x28, 0x36, 0x56, 0xC4, 0x17, 0x20, 0x6, 0x53},
     {0x28, 0xBF, 0xE0, 0xCD, 0x17, 0x20, 0x6, 0x6F}};
 
 RTC_DATA_ATTR int bootCount = 0;
-RTC_DATA_ATTR int messagesSkippedCount = 0;
-RTC_DATA_ATTR float previousTemperatures[numberOfSensors];
+RTC_DATA_ATTR int transmissionsSkippedCount = 0;
+RTC_DATA_ATTR float previousTransmittedTemperatures[kNumberOfSensors];
 
 // globals
 OneWire oneWire(ONE_WIRE_BUS);
@@ -36,13 +52,13 @@ PubSubClient mqttClient(espClient);
 void read_sensor_data(float* temperatures) {
     sensors.begin();
     sensors.requestTemperatures();
-    for (int i = 0; i < numberOfSensors; i++) {
-        temperatures[i] = sensors.getTempC(sensorAdresses[i]);
+    for (int i = 0; i < kNumberOfSensors; i++) {
+        temperatures[i] = sensors.getTempC(kSensorAdresses[i]);
     }
 }
 
 bool is_relevant_change(float temperature_1, float temperature_2) {
-    return abs(temperature_1 - temperature_2) > minTemperatureDifference;
+    return abs(temperature_1 - temperature_2) > kMinTemperatureDifference;
 }
 
 double round2(double value) { return (int)(value * 100 + 0.5) / 100.0; }
@@ -77,7 +93,7 @@ void setup_mqtt() {
 }
 
 void deep_sleep(int sleepTimeSeconds) {
-    Log.noticeln("Setting timer to %d seconds", sleepTimeSeconds);
+    Log.noticeln("Setting timer to %ds", sleepTimeSeconds);
     esp_sleep_enable_timer_wakeup(sleepTimeSeconds * 1000000);
 
     Log.noticeln("Starting deep sleep - Byebye ###");
@@ -93,21 +109,34 @@ void setup() {
     setup_serial_and_log();
 
     Log.noticeln("### Starting");
-    Log.noticeln("Boot count: %d", bootCount);
+    Log.noticeln("Boot count: %d, Transmissions skipped count: %d", bootCount,
+                 transmissionsSkippedCount);
 
-    // Sensors
-    float temperatures[numberOfSensors];
+    // Read sensors
+    float temperatures[kNumberOfSensors];
+    String changeType;
     read_sensor_data(&temperatures[0]);
-    for (int i = 0; i < numberOfSensors; i++) {
-        String changeType = "insignificant";
-        if (is_relevant_change(temperatures[i], previousTemperatures[i])) {
-            previousTemperatures[i] = temperatures[i];
+    for (int i = 0; i < kNumberOfSensors; i++) {
+        if (is_relevant_change(temperatures[i],
+                               previousTransmittedTemperatures[i])) {
             transmissionNeeded = true;
             changeType = "relevant";
+        } else {
+            changeType = "insignificant";
         }
-        Log.noticeln("Sensor %d: %F (previously: %F): %s change", i,
-                     temperatures[i], previousTemperatures[i], changeType);
-        jsonOut["Temp_" + String(i)] = round2(temperatures[i]);
+        Log.noticeln("Sensor %d: %F (previously transmitted: %F): %s change", i,
+                     temperatures[i], previousTransmittedTemperatures[i],
+                     changeType);
+    }
+
+    // Check time without transmissions
+    int timeWithoutTransmissionSeconds =
+        (transmissionsSkippedCount + 1) * kSleepTimeSeconds;
+    Log.noticeln("Time without transmission: %ds",
+                 timeWithoutTransmissionSeconds);
+    if (timeWithoutTransmissionSeconds > kMaxTimeWithoutTransmissionSeconds) {
+        Log.noticeln("Last transmission too long ago.");
+        transmissionNeeded = true;
     }
 
     if (transmissionNeeded) {
@@ -115,20 +144,25 @@ void setup() {
         setup_mqtt();
 
         jsonOut["RSSI"] = WiFi.RSSI();
-        if (messagesSkippedCount > 0) {
-            jsonOut["Skipped"] = messagesSkippedCount;
+        if (transmissionsSkippedCount > 0) {
+            jsonOut["Skipped"] = transmissionsSkippedCount;
+        }
+
+        for (int i = 0; i < kNumberOfSensors; i++) {
+            jsonOut["Temp_" + String(i)] = round2(temperatures[i]);
+            previousTransmittedTemperatures[i] = temperatures[i];
         }
 
         size_t n = serializeJson(jsonOut, mqttMessage);
         mqttClient.publish(kMqttTopic, mqttMessage, n);
-        messagesSkippedCount = 0;
         Log.noticeln("Sent MQTT Message: %s", mqttMessage);
+        transmissionsSkippedCount = 0;
     } else {
         Log.noticeln("No transmission needed");
-        ++messagesSkippedCount;
+        ++transmissionsSkippedCount;
     }
 
-    deep_sleep(sleepTimeSeconds);
+    deep_sleep(kSleepTimeSeconds);
 }
 
 void loop() {
