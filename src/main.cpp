@@ -13,6 +13,7 @@
 
 #ifndef SECRETS_H
 // WIFI access
+const char* kHostname = "<hostname>";
 const char* kWifiSsid = "<wifi-ssid>";
 const char* kWifiPassword = "<wifi-pwd>>";
 
@@ -72,6 +73,8 @@ void setup_serial_and_log() {
 
 void setup_wifi() {
     Log.noticeln("WiFi: connecting to %s ...", kWifiSsid);
+    WiFi.disconnect();
+    WiFi.setHostname(kHostname);
     WiFi.begin(kWifiSsid, kWifiPassword);
     while (WiFi.status() != WL_CONNECTED) {
         delay(250);
@@ -131,10 +134,10 @@ void setup() {
 
     // Check time without transmissions
     int timeWithoutTransmissionSeconds =
-        (transmissionsSkippedCount + 1) * kSleepTimeSeconds;
+        (transmissionsSkippedCount * kSleepTimeSeconds) + kSleepTimeSeconds;
     Log.noticeln("Time without transmission: %ds",
                  timeWithoutTransmissionSeconds);
-    if (timeWithoutTransmissionSeconds > kMaxTimeWithoutTransmissionSeconds) {
+    if (timeWithoutTransmissionSeconds >= kMaxTimeWithoutTransmissionSeconds) {
         Log.noticeln("Last transmission too long ago.");
         transmissionNeeded = true;
     }
